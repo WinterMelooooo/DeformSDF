@@ -21,12 +21,10 @@ class VolSDFTrainRunner():
         self.nepochs = kwargs['nepochs']
         self.exps_folder_name = kwargs['exps_folder_name']
         self.GPU_INDEX = kwargs['gpu_index']
-        
+        self.temp_vis = kwargs['temp_vis']
 
         self.expname = self.conf.get_string('train.expname') + kwargs['expname']
         self.scene_name = kwargs['scene_name']
-        scan_ids = utils.get_scans(os.path.join('../data',self.conf.get_string('dataset.data_dir')))
-        self.n_frames = len(scan_ids)
         if kwargs['is_continue'] and kwargs['timestamp'] == 'latest':
             if os.path.exists(os.path.join('../',kwargs['exps_folder_name'],self.expname)):
                 timestamps = os.listdir(os.path.join('../',kwargs['exps_folder_name'],self.expname))
@@ -41,7 +39,9 @@ class VolSDFTrainRunner():
                 timestamp = None
         else:
             timestamp = kwargs['timestamp']
+            print(f"timestamp be: {timestamp}")
             is_continue = kwargs['is_continue']
+            print(f"is_continue be: {is_continue}")
         
         utils.mkdir_ifnotexists(os.path.join('../',self.exps_folder_name))
         self.expdir = os.path.join('../', self.exps_folder_name, self.scene_name)
@@ -50,12 +50,6 @@ class VolSDFTrainRunner():
         self.scene_dir = self.expdir
         self.expdir = os.path.join(self.expdir, self.timestamp)
         utils.mkdir_ifnotexists(self.expdir)        
-        for scan_id in scan_ids:
-            expname = 'frame_{0}'.format(scan_id)
-            expdir = os.path.join(self.expdir, expname)
-            utils.mkdir_ifnotexists(expdir)
-            plots_dir = os.path.join(expdir, 'plots')
-            utils.mkdir_ifnotexists(plots_dir)
 
         # create checkpoints dirs
         self.checkpoints_path = os.path.join( self.expdir, 'checkpoints')
@@ -76,19 +70,16 @@ class VolSDFTrainRunner():
 
         print('shell command : {0}'.format(' '.join(sys.argv)))
 
+
         print('Loading data ...')
         self.train_datasets = []
-
-        self.num_max_frame = self.conf.get_int('train.num_max_frame')
         dataset_conf = self.conf.get_config('dataset')
-        dataset_conf['scan_ids'] = scan_ids
-        dataset_conf['num_max_frame'] = self.num_max_frame
 
         self.train_dataset = utils.get_class(self.conf.get_string('train.dataset_class'))(**dataset_conf)
+        
+        self.n_images_train = self.train_dataset.n_images
 
-        self.ds_len = len(self.train_dataset)
-        self.num_cams = self.train_dataset.n_images
-        print('Finish loading data. Data-set size: {0}'.format(self.ds_len))
+        print('Finish loading data. Data-set size: {0}'.format(self.n_images_train))
         '''
         if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
             self.nepochs = int(200000 / self.ds_len)
@@ -107,7 +98,7 @@ class VolSDFTrainRunner():
                                                            )
 
         conf_model = self.conf.get_config('model')
-        self.model = utils.get_class(self.conf.get_string('train.model_class')) ( conf=conf_model, deform_conf = self.conf.get_config('deform'), total_frame = len(scan_ids), warmup = self.conf.get_int('train.warmup_epoch') )
+        self.model = utils.get_class(self.conf.get_string('train.model_class')) ( conf=conf_model, deform_conf = self.conf.get_config('deform'), train_frames = self.n_images_train, warmup = self.conf.get_int('train.warmup_epoch') )
         if torch.cuda.is_available():
             self.model.cuda()
 
@@ -178,116 +169,106 @@ class VolSDFTrainRunner():
 
     def run(self):
         print("training...")
-
         iteration = 0
         for epoch in range(self.start_epoch, self.nepochs + 1):
 
             if epoch % self.checkpoint_freq == 0:
                 self.save_checkpoints(epoch)
                 self.model.deform.save_weights(self.checkpoints_path, epoch)
-            if self.do_vis and epoch % self.plot_freq == 0:
+            #self.do_vis = False
+            if (self.do_vis and epoch % self.plot_freq == 0) or self.temp_vis:
                 self.model.eval()
 
                 self.train_dataset.change_sampling_idx(-1)
-                indices, model_input, ground_truths, frame_range = next(iter(self.plot_dataloader))
-                frame_start, frame_end = frame_range[0]
-
+                indices, model_input, ground_truth = next(iter(self.plot_dataloader))
+                time = model_input['time'].cuda()
+                #time = time[0]
                 model_input["intrinsics"] = model_input["intrinsics"].cuda()
                 model_input["uv"] = model_input["uv"].cuda()
                 model_input['pose'] = model_input['pose'].cuda()
 
-                
-                for frame in range(frame_start, frame_end+1):
-                    split = utils.split_input(model_input, self.total_pixels, n_pixels=self.split_n_pixels)
-                    res = []
-                    for s in tqdm(split):
-                        s['frame'] = frame
-                        out = self.model(s,iteration)
-                        d = {'rgb_values': out['rgb_values'].detach(),
-                            'normal_map': out['normal_map'].detach()}
-                        res.append(d)
-                    temp_storage = os.path.join(self.expdir, f"frame_{frame}", "res.txt")
-                    with open (temp_storage, "w") as f:
-                        print(res, file=f)
-                    batch_size = 1
-                    model_outputs = utils.merge_output(res, self.total_pixels, batch_size)
-                    plot_data = self.get_plot_data(model_outputs, model_input['pose'], ground_truths['rgbs'][frame-frame_start])
-                    with open (temp_storage, "a") as f:
-                        print(plot_data, file=f)
-                    plot_dir = os.path.join(self.expdir, f"frame_{frame}", "plots")
+                split = utils.split_input(model_input, self.total_pixels, n_pixels=self.split_n_pixels)
+                res = []
+                for s in tqdm(split):
+                    s['time'] = time
+                    out = self.model(s,epoch,exp_dir = self.expdir if self.temp_vis else None)
+                    d = {'rgb_values': out['rgb_values'].detach(),
+                        'normal_map': out['normal_map'].detach()}
+                    res.append(d)
+                batch_size = 1
+                model_outputs = utils.merge_output(res, self.total_pixels, batch_size)
+                plot_data = self.get_plot_data(model_outputs, model_input['pose'], ground_truth['rgb'])
+                plot_dir = os.path.join(self.expdir, "plots")
 
-                    plt.plot(self.model.implicit_network,
-                             self.model.deform,
-                            indices,
-                            plot_data,
-                            plot_dir,
-                            epoch,
-                            self.img_res,
-                            frame,
-                            **self.plot_conf
-                            )
+                plt.plot(self.model.implicit_network,
+                            self.model.deform,
+                        indices,
+                        plot_data,
+                        plot_dir,
+                        epoch,
+                        self.img_res,
+                        time,
+                        **self.plot_conf
+                        )
 
                 self.model.train()
+                self.temp_vis = False
 
             self.train_dataset.change_sampling_idx(self.num_pixels)
 
-            for data_index, (indices, model_input, ground_truths, frame_range) in enumerate(self.train_dataloader):
-                frame_start, frame_end = frame_range[0]
+            for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
+                iteration += 1
                 model_input["intrinsics"] = model_input["intrinsics"].cuda()
                 model_input["uv"] = model_input["uv"].cuda()
                 model_input['pose'] = model_input['pose'].cuda()
+                model_input['time'] = model_input['time'].cuda()
+                model_outputs = self.model(model_input,epoch)
+                loss_output = self.loss(model_outputs, ground_truth)
 
-                for frame in range(frame_start, frame_end+1):
-                    iteration += 1
-                    model_input["frame"] = frame
-                    model_outputs = self.model(model_input,iteration)
-                    loss_output = self.loss(model_outputs, ground_truths, frame-frame_start)
+                loss = loss_output['loss']
 
-                    loss = loss_output['loss']
+                self.optimizer.zero_grad()
+                self.model.deform.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                self.model.deform.optimizer.step()
 
-                    self.optimizer.zero_grad()
-                    self.model.deform.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
-                    self.model.deform.optimizer.step()
-
-                    psnr = rend_util.get_psnr(model_outputs['rgb_values'],
-                                            ground_truths['rgbs'][frame-frame_start].cuda().reshape(-1,3))
-                    
-                    print(
-                        f"{self.expname}_{self.timestamp} [{epoch*self.num_cams+data_index}/{self.nepochs*self.num_cams}] ({frame+1}/{self.n_frames}): loss = {loss.item()}, rgb_loss = {loss_output['rgb_loss'].item()}, eikonal_loss = {loss_output['eikonal_loss'].item()}, psnr = {psnr.item()}")
-                    self.writer.add_scalars("Losses", {
-                        "Total_Loss": loss.item(),
-                        "RGB_Loss": loss_output['rgb_loss'].item(),
-                        "Eikonal_Loss": loss_output['eikonal_loss'].item()
-                    }, iteration)
-                    self.writer.add_scalar("PSNR", psnr.item(), iteration)
-                    
-                    '''
-                    print(
-                        '{0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
-                            .format(self.expname, self.timestamp, epoch, data_index, self.n_batches, loss.item(),
-                                    loss_output['rgb_loss'].item(),
-                                    loss_output['eikonal_loss'].item(),
-                                    psnr.item()))
-                    '''
-                    self.train_dataset.change_sampling_idx(self.num_pixels)
-                    self.scheduler.step()
+                psnr = rend_util.get_psnr(model_outputs['rgb_values'],
+                                        ground_truth['rgb'].cuda().reshape(-1,3))
+                
+                '''
+                print(
+                    f"{self.expname}_{self.timestamp} [{epoch*self.num_cams+data_index}/{self.nepochs*self.num_cams}] ({frame+1}/{self.n_frames}): loss = {loss.item()}, rgb_loss = {loss_output['rgb_loss'].item()}, eikonal_loss = {loss_output['eikonal_loss'].item()}, psnr = {psnr.item()}")
+                '''
+                self.writer.add_scalars("Losses", {
+                    "Total_Loss": loss.item(),
+                    "RGB_Loss": loss_output['rgb_loss'].item(),
+                    "Eikonal_Loss": loss_output['eikonal_loss'].item()
+                }, iteration)
+                self.writer.add_scalar("PSNR", psnr.item(), iteration)
+                
+                
+                print(
+                    '{0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
+                        .format(self.expname, self.timestamp, epoch, data_index, self.n_batches, loss.item(),
+                                loss_output['rgb_loss'].item(),
+                                loss_output['eikonal_loss'].item(),
+                                psnr.item()))
+                self.train_dataset.change_sampling_idx(self.num_pixels)
+                self.scheduler.step()
 
         self.save_checkpoints(epoch)
         self.writer.close() 
 
     def get_plot_data(self, model_outputs, pose, rgb_gt):
-
-        batch_size = 1 
-        num_samples, _ = rgb_gt.shape
+        batch_size, num_samples, _ = rgb_gt.shape
 
         rgb_eval = model_outputs['rgb_values'].reshape(batch_size, num_samples, 3)
         normal_map = model_outputs['normal_map'].reshape(batch_size, num_samples, 3)
         normal_map = (normal_map + 1.) / 2.
 
         plot_data = {
-            'rgb_gt': rgb_gt.unsqueeze(0),
+            'rgb_gt': rgb_gt,
             'pose': pose,
             'rgb_eval': rgb_eval,
             'normal_map': normal_map,

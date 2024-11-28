@@ -45,12 +45,12 @@ class UniformSampler(RaySampler):
 
 class ErrorBoundSampler(RaySampler):
     def __init__(self, scene_bounding_sphere, near, N_samples, N_samples_eval, N_samples_extra,
-                 eps, beta_iters, max_total_iters,
+                 eps, beta_iters, max_total_iters,far,
                  inverse_sphere_bg=False, N_samples_inverse_sphere=0, add_tiny=0.0):
         super().__init__(near, 2.0 * scene_bounding_sphere)
         self.N_samples = N_samples
         self.N_samples_eval = N_samples_eval
-        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg)
+        self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg, far=far)
 
         self.N_samples_extra = N_samples_extra
 

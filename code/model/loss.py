@@ -18,8 +18,8 @@ class VolSDFLoss(nn.Module):
         eikonal_loss = ((grad_theta.norm(2, dim=1) - 1) ** 2).mean()
         return eikonal_loss
 
-    def forward(self, model_outputs, ground_truth, frame):
-        rgb_gt = ground_truth['rgbs'][frame].cuda()
+    def forward(self, model_outputs, ground_truth):
+        rgb_gt = ground_truth['rgb'].cuda()
         rgb_gt = rgb_gt.unsqueeze(0)
         rgb_loss = self.get_rgb_loss(model_outputs['rgb_values'], rgb_gt)
         if 'grad_theta' in model_outputs:

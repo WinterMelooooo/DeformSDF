@@ -7,6 +7,7 @@ from model.density import LaplaceDensity
 from model.ray_sampler import ErrorBoundSampler
 from model.deform_model import DeformModel
 from utils.general_utils import get_linear_noise_func
+import os
 
 class ImplicitNetwork(nn.Module):
     def __init__(
@@ -189,30 +190,47 @@ class RenderingNetwork(nn.Module):
         return x
 
 class VolSDFNetwork(nn.Module):
-    def __init__(self, conf, deform_conf, total_frame, warmup):
+    def __init__(self, conf, deform_conf, train_frames, warmup):
         super().__init__()
         self.feature_vector_size = conf.get_int('feature_vector_size')
         self.scene_bounding_sphere = conf.get_float('scene_bounding_sphere', default=1.0)
-        self.white_bkgd = conf.get_bool('white_bkgd', default=False)
+        self.colored_bkgd = conf.get_bool('colored_bkgd', default=False)
         self.bg_color = torch.tensor(conf.get_list("bg_color", default=[1.0, 1.0, 1.0])).float().cuda()
-
-        self.implicit_network = ImplicitNetwork(self.feature_vector_size, 0.0 if self.white_bkgd else self.scene_bounding_sphere, **conf.get_config('implicit_network'))
+        print(f"colored background be:{self.colored_bkgd}")
+        print(f"bg_color be: {self.bg_color}")
+        self.implicit_network = ImplicitNetwork(self.feature_vector_size, 0.0 if self.colored_bkgd else self.scene_bounding_sphere, **conf.get_config('implicit_network'))
         self.rendering_network = RenderingNetwork(self.feature_vector_size, **conf.get_config('rendering_network'))
 
         self.density = LaplaceDensity(**conf.get_config('density'))
         self.ray_sampler = ErrorBoundSampler(self.scene_bounding_sphere, **conf.get_config('ray_sampler'))
 
-        self.deform = DeformModel(total_frame)
+        self.deform = DeformModel(train_frames, warmup)
         self.deform.train_setting(**deform_conf)
-        self.total_frames = total_frame
+        self.total_frames = train_frames
         self.warmup = warmup
+    def write_points_to_xyz(self,points, file_path):
+        """
+        将点云写入指定路径的 .xyz 文件
+        :param points: 点云数据，形状为 [N, 3]
+        :param file_path: 保存 .xyz 文件的路径
+        """
+        # 确保输入是 NumPy 数组
+        points = np.array(points)
+        if points.shape[1] != 3:
+            raise ValueError("点云数据必须是 [N, 3] 的形状")
 
-    def forward(self, input, iteration):
+        # 写入 .xyz 文件
+        with open(file_path, 'a') as file:
+            for point in points:
+                file.write(f"{point[0]} {point[1]} {point[2]}\n")
+        print(f"点云数据已保存到 {file_path}")
+
+    def forward(self, input, epoch, exp_dir = None):
         # Parse model input
         intrinsics = input["intrinsics"]# 内参 (1,4,4)
         uv = input["uv"] # 二维图像上采样出的像素点坐标,(1,num_pts, 2)
         pose = input["pose"] # 外参 (1,4,4)
-        frame = input["frame"]
+        time = input["time"]
         ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)# ray_dirs:(1, num_pts, 3)从相机位置指向采样像素点的方向向量; cam_loc:相机的空间坐标
 
         batch_size, num_pixels, _ = ray_dirs.shape
@@ -225,15 +243,15 @@ class VolSDFNetwork(nn.Module):
 
         points = cam_loc.unsqueeze(1) + z_vals.unsqueeze(2) * ray_dirs.unsqueeze(1)
         points_flat = points.reshape(-1, 3)
-
+        if exp_dir:
+            file_path = os.path.join(exp_dir, "log.xyz")
+            self.write_points_to_xyz(points_flat.cpu().detach().numpy(), file_path)
+            raise Exception
         time_interval = 1 / self.total_frames
-        if iteration < self.warmup:
-            d_xyz, d_rotation, d_scaling = 0.0, 0.0, 0.0
-        else:
-            N = points_flat.shape[0]
-            smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
-            ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(self.deform.interation)
-            d_xyz, d_rotation, d_scaling = self.deform.step(points_flat.detach(), time_interval* frame + ast_noise)
+        N = points_flat.shape[0]
+        smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
+        ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(self.deform.iteration)
+        d_xyz, d_rotation, d_scaling = self.deform.step(points_flat.detach(), time + ast_noise, epoch)
         points_flat_ave = points_flat + d_xyz
 
         dirs = ray_dirs.unsqueeze(1).repeat(1,N_samples,1)
@@ -248,13 +266,15 @@ class VolSDFNetwork(nn.Module):
         rgb_values = torch.sum(weights.unsqueeze(-1) * rgb, 1)
 
         # white background assumption
-        if self.white_bkgd:
+        if self.colored_bkgd:
             acc_map = torch.sum(weights, -1)
             rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
 
         output = {
             'rgb_values': rgb_values,
         }
+        
+            
 
         if self.training:
             # Sample points for the eikonal loss

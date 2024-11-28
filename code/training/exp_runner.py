@@ -26,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('--scene_name',type=str,default="unamed")
     parser.add_argument('--ckpt', default=None, type=str,
                         help="ckpt_path=prefix/TIMESTAMP")
-
+    parser.add_argument('--temp_vis', default=False, action="store_true")
     opt = parser.parse_args()
 
     if opt.gpu == "auto":
@@ -47,7 +47,8 @@ if __name__ == '__main__':
                                     timestamp=opt.timestamp,
                                     checkpoint=opt.checkpoint,
                                     do_vis=not opt.cancel_vis,
-                                    IniCkpt = opt.ckpt
+                                    IniCkpt = opt.ckpt,
+                                    temp_vis = opt.temp_vis
                                     )
 
     trainrunner.run()

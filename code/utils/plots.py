@@ -11,8 +11,10 @@ from PIL import Image
 from utils import rend_util
 import utils.general as utils
 from utils.general_utils import get_linear_noise_func
+import os
+import json
 
-def plot(implicit_network, deform, indices, plot_data, path, epoch, img_res, frame, plot_nimgs, resolution, grid_boundary, level=0):
+def plot(implicit_network, deform, indices, plot_data, path, epoch, img_res, time, plot_nimgs, resolution, grid_boundary, level=0):
 
     if plot_data is not None:
         cam_loc, cam_dir = rend_util.get_camera_for_plot(plot_data['pose'])
@@ -33,7 +35,8 @@ def plot(implicit_network, deform, indices, plot_data, path, epoch, img_res, fra
                                        resolution=resolution,
                                        grid_boundary=grid_boundary,
                                        level=level,
-                                       frame=frame
+                                       time=time,
+                                       indices = indices
                                        )
 
     if surface_traces is not None:
@@ -99,17 +102,16 @@ def get_3D_quiver_trace(points, directions, color='#bd1540', name=''):
     return trace
 
 
-def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, grid_boundary=[-2.0, 2.0], return_mesh=False, level=0, frame=0):
+def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, grid_boundary=[-2.0, 2.0], return_mesh=False, level=0, time=0, indices = -1):
     def sdf(pnts):
-        time_interval = 1/deform.total_frame
+        time_interval = 1/deform.n_images_train
         N = pnts.shape[0]
         smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
-        ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(deform.interation)
-        d_xyz, d_rotation, d_scaling = deform.step(pnts.detach(), time_interval* frame + ast_noise)
+        ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(deform.iteration)
+        d_xyz, d_rotation, d_scaling = deform.step(pnts.detach(), time + ast_noise, epoch)
         return implicit_network(pnts+d_xyz)[:, 0]
-    
-    
-    
+
+    log_file = os.path.join(path,"log.json")
     grid = get_grid_uniform(resolution, grid_boundary)
     points = grid['grid_points']
 
@@ -118,6 +120,10 @@ def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, gri
         z.append(sdf(pnts).detach().cpu().numpy())
     z = np.concatenate(z, axis=0)
 
+    with open( log_file, "a" ) as f:
+            dic = {"epoch":epoch,"z":z.tolist(), "grid boundary":grid_boundary}
+            json.dump(dic, f)
+    
     if (not (np.min(z) > level or np.max(z) < level)):
 
         z = z.astype(np.float32)
@@ -141,7 +147,13 @@ def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, gri
                             lightposition=dict(x=0, y=0, z=-1), showlegend=True)]
 
         meshexport = trimesh.Trimesh(verts, faces, normals)
-        meshexport.export('{0}/surface_{1}.ply'.format(path, epoch), 'ply')
+        '''
+        with open( "/home/yktang/DeformSDF/temp.txt", "a" ) as f:
+            print(f"printing meshexport to txt!")
+            print(meshexport, file=f)
+            raise Exception
+        '''
+        meshexport.export('{0}/surface_{1}_frame_{2}.ply'.format(path, epoch, indices[0]), 'ply')
 
         if return_mesh:
             return meshexport
@@ -398,7 +410,6 @@ def plot_normal_maps(normal_maps, path, epoch, plot_nrow, img_res):
 
 def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res):
     ground_true = ground_true.cuda()
-
     output_vs_gt = torch.cat((rgb_points, ground_true), dim=0)
     output_vs_gt_plot = lin2img(output_vs_gt, img_res)
 
