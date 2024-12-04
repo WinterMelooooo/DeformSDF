@@ -5,9 +5,7 @@ from utils import rend_util
 from model.embedder import *
 from model.density import LaplaceDensity
 from model.ray_sampler import ErrorBoundSampler
-from model.deform_model import DeformModel
-from utils.general_utils import get_linear_noise_func
-import os
+from model.temporalnerf import DirectTemporalNeRF
 
 class ImplicitNetwork(nn.Module):
     def __init__(
@@ -72,7 +70,7 @@ class ImplicitNetwork(nn.Module):
 
     def forward(self, input):
         if self.embed_fn is not None:
-            input = self.embed_fn(input) #input乘上一大堆freq，算出来一系列sin、cos，然后再把这一组组sin、cos串起来返回，实际上就是一个高频编码提升模型对集合细节的捕捉能力
+            input = self.embed_fn(input)
 
         x = input
 
@@ -140,6 +138,8 @@ class RenderingNetwork(nn.Module):
             d_out,
             dims,
             weight_norm=True,
+            geometric_init=True,
+            bias=1.0,
             multires_view=0,
     ):
         super().__init__()
@@ -159,6 +159,17 @@ class RenderingNetwork(nn.Module):
             out_dim = dims[l + 1]
             lin = nn.Linear(dims[l], out_dim)
 
+            if geometric_init:
+                if l == self.num_layers - 2:
+                    torch.nn.init.normal_(lin.weight, mean=np.sqrt(np.pi) / np.sqrt(dims[l]), std=0.0001)
+                    torch.nn.init.constant_(lin.bias, -bias)
+                elif multires_view > 0 and l == 0:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.constant_(lin.weight[:, 3:], 0.0)
+                    torch.nn.init.normal_(lin.weight[:, :3], 0.0, np.sqrt(2) / np.sqrt(out_dim))
+                else:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
             if weight_norm:
                 lin = nn.utils.weight_norm(lin)
 
@@ -190,48 +201,42 @@ class RenderingNetwork(nn.Module):
         return x
 
 class VolSDFNetwork(nn.Module):
-    def __init__(self, conf, deform_conf, train_frames, warmup):
+    def __init__(self, conf):
         super().__init__()
         self.feature_vector_size = conf.get_int('feature_vector_size')
         self.scene_bounding_sphere = conf.get_float('scene_bounding_sphere', default=1.0)
-        self.colored_bkgd = conf.get_bool('colored_bkgd', default=False)
+        self.white_bkgd = conf.get_bool('white_bkgd', default=False)
         self.bg_color = torch.tensor(conf.get_list("bg_color", default=[1.0, 1.0, 1.0])).float().cuda()
-        print(f"colored background be:{self.colored_bkgd}")
-        print(f"bg_color be: {self.bg_color}")
-        self.implicit_network = ImplicitNetwork(self.feature_vector_size, 0.0 if self.colored_bkgd else self.scene_bounding_sphere, **conf.get_config('implicit_network'))
+
+        self.implicit_network = ImplicitNetwork(self.feature_vector_size, 0.0 if self.white_bkgd else self.scene_bounding_sphere, **conf.get_config('implicit_network'))
         self.rendering_network = RenderingNetwork(self.feature_vector_size, **conf.get_config('rendering_network'))
 
         self.density = LaplaceDensity(**conf.get_config('density'))
         self.ray_sampler = ErrorBoundSampler(self.scene_bounding_sphere, **conf.get_config('ray_sampler'))
+        
+        
+        multires = 10
+        i_embed = 0
+        multires_views = 4
+        self.embed_fn, input_ch = get_embedder(multires, 3, i_embed)
+        self.embedtime_fn, input_ch_time = get_embedder(multires, 1, i_embed)
+        # self.embeddirs_fn, input_ch_views = get_embedder(multires_views, 3, i_embed)
+        output_ch = 4
+        skips = [4]
+        self.deform_net = DirectTemporalNeRF(input_ch=input_ch, output_ch=output_ch, skips=skips,
+                 input_ch_views=0, input_ch_time=input_ch_time,
+                 use_viewdirs=True, embed_fn=self.embed_fn,
+                 zero_canonical=True).to('cuda')
+        self.netchunk = 1024*64
 
-        self.deform = DeformModel(train_frames, warmup)
-        self.deform.train_setting(**deform_conf)
-        self.total_frames = train_frames
-        self.warmup = warmup
-    def write_points_to_xyz(self,points, file_path):
-        """
-        将点云写入指定路径的 .xyz 文件
-        :param points: 点云数据，形状为 [N, 3]
-        :param file_path: 保存 .xyz 文件的路径
-        """
-        # 确保输入是 NumPy 数组
-        points = np.array(points)
-        if points.shape[1] != 3:
-            raise ValueError("点云数据必须是 [N, 3] 的形状")
-
-        # 写入 .xyz 文件
-        with open(file_path, 'a') as file:
-            for point in points:
-                file.write(f"{point[0]} {point[1]} {point[2]}\n")
-        print(f"点云数据已保存到 {file_path}")
-
-    def forward(self, input, epoch, exp_dir = None):
+    def forward(self, input):
         # Parse model input
-        intrinsics = input["intrinsics"]# 内参 (1,4,4)
-        uv = input["uv"] # 二维图像上采样出的像素点坐标,(1,num_pts, 2)
-        pose = input["pose"] # 外参 (1,4,4)
+        intrinsics = input["intrinsics"]
+        uv = input["uv"]
+        pose = input["pose"]
         time = input["time"]
-        ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)# ray_dirs:(1, num_pts, 3)从相机位置指向采样像素点的方向向量; cam_loc:相机的空间坐标
+
+        ray_dirs, cam_loc = rend_util.get_camera_params(uv, pose, intrinsics)
 
         batch_size, num_pixels, _ = ray_dirs.shape
 
@@ -243,21 +248,27 @@ class VolSDFNetwork(nn.Module):
 
         points = cam_loc.unsqueeze(1) + z_vals.unsqueeze(2) * ray_dirs.unsqueeze(1)
         points_flat = points.reshape(-1, 3)
-        if exp_dir:
-            file_path = os.path.join(exp_dir, "log.xyz")
-            self.write_points_to_xyz(points_flat.cpu().detach().numpy(), file_path)
-            raise Exception
-        time_interval = 1 / self.total_frames
-        N = points_flat.shape[0]
-        smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
-        ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(self.deform.iteration)
-        d_xyz, d_rotation, d_scaling = self.deform.step(points_flat.detach(), time + ast_noise, epoch)
-        points_flat_ave = points_flat + d_xyz
 
         dirs = ray_dirs.unsqueeze(1).repeat(1,N_samples,1)
         dirs_flat = dirs.reshape(-1, 3)
 
-        sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat_ave)
+        ### add dynamic part
+        
+        embedded = self.embed_fn(points_flat) # 100352, 63
+        # embd_time_discr
+        input_frame_time_flat = time[:, None].expand(embedded.shape[0], 1)
+        embedded_time = self.embedtime_fn(input_frame_time_flat)
+        embedded_times = [embedded_time, embedded_time]
+        # embed views
+        # embedded_dirs = self.embeddirs_fn(dirs_flat) # 100352, 27
+        # embedded = torch.cat([embedded, embedded_dirs], -1) # 100352, 90
+        # compute delta
+        position_delta_flat = batchify(self.deform_net, self.netchunk)(embedded, embedded_times)
+        points_flat = points_flat + position_delta_flat
+        
+
+        sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
+
         rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors)
         rgb = rgb_flat.reshape(-1, N_samples, 3)
 
@@ -266,15 +277,13 @@ class VolSDFNetwork(nn.Module):
         rgb_values = torch.sum(weights.unsqueeze(-1) * rgb, 1)
 
         # white background assumption
-        if self.colored_bkgd:
+        if self.white_bkgd:
             acc_map = torch.sum(weights, -1)
             rgb_values = rgb_values + (1. - acc_map[..., None]) * self.bg_color.unsqueeze(0)
 
         output = {
             'rgb_values': rgb_values,
         }
-        
-            
 
         if self.training:
             # Sample points for the eikonal loss
@@ -284,7 +293,6 @@ class VolSDFNetwork(nn.Module):
             # add some of the near surface points
             eik_near_points = (cam_loc.unsqueeze(1) + z_samples_eik.unsqueeze(2) * ray_dirs.unsqueeze(1)).reshape(-1, 3)
             eikonal_points = torch.cat([eikonal_points, eik_near_points], 0)
-
             grad_theta = self.implicit_network.gradient(eikonal_points)
             output['grad_theta'] = grad_theta
 
@@ -301,7 +309,6 @@ class VolSDFNetwork(nn.Module):
     def volume_rendering(self, z_vals, sdf):
         density_flat = self.density(sdf)
         density = density_flat.reshape(-1, z_vals.shape[1])  # (batch_size * num_pixels) x N_samples
-
         dists = z_vals[:, 1:] - z_vals[:, :-1]
         dists = torch.cat([dists, torch.tensor([1e10]).cuda().unsqueeze(0).repeat(dists.shape[0], 1)], -1)
 
@@ -313,3 +320,61 @@ class VolSDFNetwork(nn.Module):
         weights = alpha * transmittance # probability of the ray hits something here
 
         return weights
+
+    def plot_3d(self, querypoints):
+        import matplotlib
+        matplotlib.use('Agg')
+        from matplotlib import pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        fig = plt.figure()
+        ax = Axes3D(fig)
+        ax.scatter(querypoints[:,0], querypoints[:,1], querypoints[:,2], s=1, c='b', marker='.', alpha=0.1)
+        ax.legend()
+        matplotlib.use('TkAgg')
+        plt.show()
+        plt.savefig('test.png')
+        plt.close()
+    
+    def get_sdf(self, points_flat, time):
+        ### add dynamic part
+        print(f"In get_sdf, points_flat.shape be:{points_flat.shape}")
+        print(f"In get_sdf, time be:{time}")
+        embedded = self.embed_fn(points_flat) # 100352, 63
+        # embd_time_discr
+        input_frame_time_flat = time[:, None].expand(embedded.shape[0], 1)
+        embedded_time = self.embedtime_fn(input_frame_time_flat)
+        embedded_times = [embedded_time, embedded_time]
+        # embed views
+        # embedded_dirs = self.embeddirs_fn(dirs_flat) # 100352, 27
+        # embedded = torch.cat([embedded, embedded_dirs], -1) # 100352, 90
+        # compute delta
+        position_delta_flat = batchify(self.deform_net, self.netchunk)(embedded, embedded_times)
+        points_flat = points_flat + position_delta_flat
+        
+
+        sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
+        return sdf
+
+def batchify(fn, chunk):
+    """Constructs a version of 'fn' that applies to smaller batches.
+    """
+    if chunk is None:
+        return fn
+    def ret(inputs_pos, inputs_time):
+        num_batches = inputs_pos.shape[0]
+
+        # out_list = []
+        # dx_list = []
+        # for i in range(0, num_batches, chunk):
+        #     out, dx = fn(inputs_pos[i:i+chunk], [inputs_time[0][i:i+chunk], inputs_time[1][i:i+chunk]])
+        #     out_list += [out]
+        #     dx_list += [dx]
+        # return torch.cat(out_list, 0), torch.cat(dx_list, 0)
+        
+        dx_list = []
+        for i in range(0, num_batches, chunk):
+            dx = fn(inputs_pos[i:i+chunk], [inputs_time[0][i:i+chunk], inputs_time[1][i:i+chunk]])
+            dx_list += [dx]
+        return torch.cat(dx_list, 0)
+    return ret
+

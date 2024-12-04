@@ -21,12 +21,13 @@ if __name__ == '__main__':
                         help='The timestamp of the run to be used in case of continuing from a previous run.')
     parser.add_argument('--checkpoint', default='latest', type=str,
                         help='The checkpoint epoch of the run to be used in case of continuing from a previous run.')
+    parser.add_argument('--scan_id', type=int, default=-1, help='If set, taken to be the scan id.')
     parser.add_argument('--cancel_vis', default=False, action="store_true",
                         help='If set, cancel visualization in intermediate epochs.')
-    parser.add_argument('--scene_name',type=str,default="unamed")
-    parser.add_argument('--ckpt', default=None, type=str,
-                        help="ckpt_path=prefix/TIMESTAMP")
-    parser.add_argument('--temp_vis', default=False, action="store_true")
+    #parser.add_argument('--scene_name',type=str,default="unamed")
+    #parser.add_argument('--ckpt', default=None, type=str,
+    #                    help="ckpt_path=prefix/TIMESTAMP")
+    #parser.add_argument('--temp_vis', default=False, action="store_true")
     opt = parser.parse_args()
 
     if opt.gpu == "auto":
@@ -42,13 +43,14 @@ if __name__ == '__main__':
                                     expname=opt.expname,
                                     gpu_index=gpu,
                                     exps_folder_name=opt.exps_folder,
-                                    scene_name = opt.scene_name,
+                                    #scene_name = opt.scene_name,
                                     is_continue=opt.is_continue,
                                     timestamp=opt.timestamp,
+                                    scan_id=opt.scan_id,
                                     checkpoint=opt.checkpoint,
-                                    do_vis=not opt.cancel_vis,
-                                    IniCkpt = opt.ckpt,
-                                    temp_vis = opt.temp_vis
+                                    do_vis=not opt.cancel_vis
+                                    #IniCkpt = opt.ckpt,
+                                    #temp_vis = opt.temp_vis
                                     )
 
     trainrunner.run()

@@ -45,9 +45,10 @@ class UniformSampler(RaySampler):
 
 class ErrorBoundSampler(RaySampler):
     def __init__(self, scene_bounding_sphere, near, N_samples, N_samples_eval, N_samples_extra,
-                 eps, beta_iters, max_total_iters,far,
+                 eps, beta_iters, max_total_iters,
+                 far=-1,
                  inverse_sphere_bg=False, N_samples_inverse_sphere=0, add_tiny=0.0):
-        super().__init__(near, 2.0 * scene_bounding_sphere)
+        super().__init__(near, 2.0 * scene_bounding_sphere if far == -1 else far)
         self.N_samples = N_samples
         self.N_samples_eval = N_samples_eval
         self.uniform_sampler = UniformSampler(scene_bounding_sphere, near, N_samples_eval, take_sphere_intersection=inverse_sphere_bg, far=far)
@@ -147,6 +148,7 @@ class ErrorBoundSampler(RaySampler):
                 bound_opacity = (torch.clamp(torch.exp(error_integral),max=1.e6) - 1.0) * transmittance[:,:-1]
 
                 pdf = bound_opacity + self.add_tiny
+                pdf = pdf + 1e-5  # prevent nans
                 pdf = pdf / torch.sum(pdf, -1, keepdim=True)
                 cdf = torch.cumsum(pdf, -1)
                 cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)

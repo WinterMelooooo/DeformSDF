@@ -1,5 +1,5 @@
 import numpy as np
 
-src = "/home/yktang/DeformSDF/data/DTU/scan24/cameras.npz"
+src = "/home/yktang/DeformSDF/data/D-NERF_synthetic_dataset/jumpingjacks/cameras_not_normalized.npz"
 file = np.load(src)
-print(type(file["world_mat_0"]))
+print(file.files)

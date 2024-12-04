@@ -9,12 +9,10 @@ import trimesh
 from PIL import Image
 
 from utils import rend_util
-import utils.general as utils
-from utils.general_utils import get_linear_noise_func
-import os
-import json
+from model.network import batchify
 
-def plot(implicit_network, deform, indices, plot_data, path, epoch, img_res, time, plot_nimgs, resolution, grid_boundary, level=0):
+
+def plot(implicit_network, indices, plot_data, path, epoch, img_res, volsdf_network, time, plot_nimgs, resolution, grid_boundary, level=0):
 
     if plot_data is not None:
         cam_loc, cam_dir = rend_util.get_camera_for_plot(plot_data['pose'])
@@ -30,13 +28,12 @@ def plot(implicit_network, deform, indices, plot_data, path, epoch, img_res, tim
     # plot surface
     surface_traces = get_surface_trace(path=path,
                                        epoch=epoch,
-                                       implicit_network = implicit_network,
-                                       deform = deform,
+                                       volsdf_network = volsdf_network,
                                        resolution=resolution,
                                        grid_boundary=grid_boundary,
                                        level=level,
-                                       time=time,
-                                       indices = indices
+                                       time = time,
+                                       frame = indices
                                        )
 
     if surface_traces is not None:
@@ -102,28 +99,15 @@ def get_3D_quiver_trace(points, directions, color='#bd1540', name=''):
     return trace
 
 
-def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, grid_boundary=[-2.0, 2.0], return_mesh=False, level=0, time=0, indices = -1):
-    def sdf(pnts):
-        time_interval = 1/deform.n_images_train
-        N = pnts.shape[0]
-        smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
-        ast_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term(deform.iteration)
-        d_xyz, d_rotation, d_scaling = deform.step(pnts.detach(), time + ast_noise, epoch)
-        return implicit_network(pnts+d_xyz)[:, 0]
-
-    log_file = os.path.join(path,"log.json")
+def get_surface_trace(path, epoch, volsdf_network, resolution=100, grid_boundary=[-2.0, 2.0], return_mesh=False, level=0, time=None, frame=None):
     grid = get_grid_uniform(resolution, grid_boundary)
     points = grid['grid_points']
 
     z = []
     for i, pnts in enumerate(torch.split(points, 100000, dim=0)):
-        z.append(sdf(pnts).detach().cpu().numpy())
+        z.append(volsdf_network.get_sdf(pnts, time).detach().cpu().numpy())
     z = np.concatenate(z, axis=0)
 
-    with open( log_file, "a" ) as f:
-            dic = {"epoch":epoch,"z":z.tolist(), "grid boundary":grid_boundary}
-            json.dump(dic, f)
-    
     if (not (np.min(z) > level or np.max(z) < level)):
 
         z = z.astype(np.float32)
@@ -147,24 +131,28 @@ def get_surface_trace(path, epoch, implicit_network, deform, resolution=100, gri
                             lightposition=dict(x=0, y=0, z=-1), showlegend=True)]
 
         meshexport = trimesh.Trimesh(verts, faces, normals)
-        '''
-        with open( "/home/yktang/DeformSDF/temp.txt", "a" ) as f:
-            print(f"printing meshexport to txt!")
-            print(meshexport, file=f)
-            raise Exception
-        '''
-        meshexport.export('{0}/surface_{1}_frame_{2}.ply'.format(path, epoch, indices[0]), 'ply')
+        meshexport.export('{0}/surface_{1}_frame_{2}.ply'.format(path, epoch, frame.item()), 'ply')
 
         if return_mesh:
             return meshexport
         return traces
     return None
 
-def get_surface_high_res_mesh(sdf, resolution=100, grid_boundary=[-2.0, 2.0], level=0, take_components=True):
+def get_surface_high_res_mesh(net, sdf, resolution=100, grid_boundary=[-2.0, 2.0], level=0, take_components=True):
     # get low res mesh to sample point cloud
     grid = get_grid_uniform(100, grid_boundary)
     z = []
     points = grid['grid_points']
+    
+    embedded = net.embed_fn(points) # 100352, 63
+    # embd_time_discr
+    time = torch.tensor([0]).float().cuda()
+    input_frame_time_flat = time[:, None].expand(embedded.shape[0], 1)
+    embedded_time = net.embedtime_fn(input_frame_time_flat)
+    embedded_times = [embedded_time, embedded_time]
+    # compute delta
+    position_delta_flat = batchify(net.deform_net, net.netchunk)(embedded, embedded_times)
+    points = points + position_delta_flat
 
     for i, pnts in enumerate(torch.split(points, 100000, dim=0)):
         z.append(sdf(pnts).detach().cpu().numpy())
@@ -185,7 +173,7 @@ def get_surface_high_res_mesh(sdf, resolution=100, grid_boundary=[-2.0, 2.0], le
     mesh_low_res = trimesh.Trimesh(verts, faces, normals)
     if take_components:
         components = mesh_low_res.split(only_watertight=False)
-        areas = np.array([c.area for c in components], dtype=np.float)
+        areas = np.array([c.area for c in components], dtype=np.float64)
         mesh_low_res = components[areas.argmax()]
 
     recon_pc = trimesh.sample.sample_surface(mesh_low_res, 10000)[0]
@@ -241,34 +229,30 @@ def get_surface_high_res_mesh(sdf, resolution=100, grid_boundary=[-2.0, 2.0], le
     return meshexport
 
 
-def get_surface_by_grid(grid_params, sdf, resolution=100, level=0, higher_res=False, points = None):
-    
-    if grid_params.any():
-        # get low res mesh to sample point cloud
-        grid_params = grid_params * [[1.5], [1.0]]
+def get_surface_by_grid(grid_params, sdf, resolution=100, level=0, higher_res=False):
+    grid_params = grid_params * [[1.5], [1.0]]
 
-        # params = PLOT_DICT[scan_id]
-        input_min = torch.tensor(grid_params[0]).float()
-        input_max = torch.tensor(grid_params[1]).float()
-        grid = get_grid(None, 100, input_min=input_min, input_max=input_max, eps=0.0)
-    else:
-        grid = get_grid(points, resolution, input_min=None, input_max=None, eps=0.0)
-    
+    # params = PLOT_DICT[scan_id]
+    input_min = torch.tensor(grid_params[0]).float()
+    input_max = torch.tensor(grid_params[1]).float()
+
     if higher_res:
+        # get low res mesh to sample point cloud
+        grid = get_grid(None, 100, input_min=input_min, input_max=input_max, eps=0.0)
         z = []
         points = grid['grid_points']
 
-        for i, pnts in enumerate(torch.split(points, 100000, dim=0)):#分割点云分批计算，避免内存不足
+        for i, pnts in enumerate(torch.split(points, 100000, dim=0)):
             z.append(sdf(pnts).detach().cpu().numpy())
         z = np.concatenate(z, axis=0)
 
         z = z.astype(np.float32)
 
-        verts, faces, normals, values = measure.marching_cubes(#实际上就是对每个体素检查其八个顶点的sdf是否都大于或小于level(也就是0)，若不是，则说明这个体素内包含物体的表面，则通过算法找一个合适的位置插入三角形，以模拟物体的表面
-            volume=z.reshape(grid['xyz'][1].shape[0], grid['xyz'][0].shape[0],#改成yxz
+        verts, faces, normals, values = measure.marching_cubes(
+            volume=z.reshape(grid['xyz'][1].shape[0], grid['xyz'][0].shape[0],
                              grid['xyz'][2].shape[0]).transpose([1, 0, 2]),
-            level=level,#为0
-            spacing=(grid['xyz'][0][2] - grid['xyz'][0][1],#相邻粒子间距离
+            level=level,
+            spacing=(grid['xyz'][0][2] - grid['xyz'][0][1],
                      grid['xyz'][0][2] - grid['xyz'][0][1],
                      grid['xyz'][0][2] - grid['xyz'][0][1]))
 
@@ -294,7 +278,7 @@ def get_surface_by_grid(grid_params, sdf, resolution=100, level=0, higher_res=Fa
 
         grid_aligned = get_grid(helper.cpu(), resolution, eps=0.01)
     else:
-        grid_aligned = grid
+        grid_aligned = get_grid(None, resolution, input_min=input_min, input_max=input_max, eps=0.0)
 
     grid_points = grid_aligned['grid_points']
 
@@ -410,6 +394,7 @@ def plot_normal_maps(normal_maps, path, epoch, plot_nrow, img_res):
 
 def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res):
     ground_true = ground_true.cuda()
+
     output_vs_gt = torch.cat((rgb_points, ground_true), dim=0)
     output_vs_gt_plot = lin2img(output_vs_gt, img_res)
 
@@ -423,7 +408,6 @@ def plot_images(rgb_points, ground_true, path, epoch, plot_nrow, img_res):
     tensor = (tensor * scale_factor).astype(np.uint8)
 
     img = Image.fromarray(tensor)
-    utils.mkdir_ifnotexists(path)
     img.save('{0}/rendering_{1}.png'.format(path, epoch))
 
 

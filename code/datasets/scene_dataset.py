@@ -8,6 +8,7 @@ import json
 from PIL import Image
 import cv2 as cv
 import math
+import glob
 
 
 
@@ -35,6 +36,22 @@ class SceneDataset(torch.utils.data.Dataset):
         assert os.path.exists(self.instance_dir), "Data directory is empty"
 
         self.sampling_idx = None
+        if os.path.exists(os.path.join(self.instance_dir,  "transforms_train.json")):
+            print("find transforms_train.json, assuming DNeRF dataset!")
+            self.read_DNeRF_dataset(data_dir, img_res, scan_id, white_bkgd)
+        elif os.path.exists(os.path.join(self.instance_dir, "cameras.npz")):
+            print("find cameras.npz, assuming DTU dataset!")
+            self.read_DTU_dataset(data_dir, img_res, scan_id, white_bkgd)
+        else:
+            print("cannot recognize scene type!")
+            raise Exception
+
+
+    def read_DNeRF_dataset(self,
+                            data_dir,
+                            img_res,
+                            scan_id=0,
+                            white_bkgd=False):
         
         contents = json.load(open(os.path.join(self.instance_dir,  "transforms_train.json"))) #  transforms_test  transforms_train
         frames = contents["frames"]
@@ -90,29 +107,57 @@ class SceneDataset(torch.utils.data.Dataset):
             time = np.array(frame["time"])
             self.time_all.append(torch.from_numpy(time).float())
 
-        self.n_images = len(self.rgb_images)
-        print("Loaded %d images" % self.n_images)
-        self.debug = False
+            self.n_images = len(self.rgb_images)
+            print("Loaded %d images" % self.n_images)
+            self.debug = False
 
-        # self.cam_file = '{0}/cameras.npz'.format(self.instance_dir)
-        # camera_dict = np.load(self.cam_file)
-        # scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-        # world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+    def read_DTU_dataset(self,
+                         data_dir,
+                         img_res,
+                         scan_id=0,
+                         white_bkgd=False):
+        self.scan_list = sorted(glob.glob(os.path.join(self.instance_dir, "scan*")))
+        self.n_images = len(self.scan_list)
+        extension = ".jpg"
+        self.n_cams = len(glob.glob( os.path.join(self.scan_list[0],"image", f"*{extension}") ))
+        if self.n_cams == 0:
+            extension = ".png"
+            self.n_cams = len(glob.glob( os.path.join(self.scan_list[0], f"*{extension}") ))
+        if self.n_cams == 0:
+            print(f"no imgs found in:{os.path.join(self.scan_list[0], f'*{extension}')}")
+            raise Exception
+        
+        self.cam_file = '{0}/cameras.npz'.format(self.instance_dir)
+        camera_dict = np.load(self.cam_file)
+        scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_cams)]
+        world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_cams)]
 
-        # self.intrinsics_all = []
-        # self.pose_all = []
-        # for scale_mat, world_mat in zip(scale_mats, world_mats):
-        #     P = world_mat @ scale_mat
-        #     P = P[:3, :4]
-        #     intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
-        #     self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
-        #     self.pose_all.append(torch.from_numpy(pose).float())
+        self.intrinsics_all = []
+        self.pose_all = []
+        for scale_mat, world_mat in zip(scale_mats, world_mats):
+            P = world_mat @ scale_mat
+            P = P[:3, :4]
+            intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
+            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+            self.pose_all.append(torch.from_numpy(pose).float())
 
-        # self.rgb_images = []
-        # for path in image_paths:
-        #     rgb = rend_util.load_rgb(path)
-        #     rgb = rgb.reshape(3, -1).transpose(1, 0)
-        #     self.rgb_images.append(torch.from_numpy(rgb).float())
+        #expand intrinsics & pose to match the length of frames
+        while len(self.intrinsics_all) < self.n_images:
+            N = len(self.intrinsics_all)
+            for i in range(N):
+                self.intrinsics_all.append(self.intrinsics_all[i])
+                self.pose_all.append(self.pose_all[i])
+
+        self.rgb_images = []
+        for scan_id in range(len(self.scan_list)):
+            scan_path = self.scan_list[scan_id]
+            imgs = sorted(glob.glob(os.path.join(scan_path, "image", f"*{extension}")))
+            img_path = imgs[scan_id % self.n_cams]
+            rgb = rend_util.load_rgb(img_path)
+            rgb = rgb.reshape(3, -1).transpose(1, 0)
+            self.rgb_images.append(torch.from_numpy(rgb).float())
+
+        self.time_all = torch.tensor([i for i in range(self.n_images)]).float()
 
     def __len__(self):
         return self.n_images

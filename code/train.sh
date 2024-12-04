@@ -4,4 +4,6 @@ unset LD_LIBRARY_PATH
 # CUDA_VISIBLE_DEVICES=6 python training/exp_runner.py --conf ./confs/spring_Gaus.conf --scene_name bun --ckpt /home/yktang/VolSDF/exps/dtu_10/2024_11_07_23_34_02
 # CUDA_VISIBLE_DEVICES=3 python training/exp_runner.py --conf ./confs/DNeRF.conf --scene_name jumpingjack --is_continue --timestamp 2024_11_23_15_23_22 --temp_vis
 # CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/DNeRF_colored_bkgd.conf --scene_name jumpingjack
-CUDA_VISIBLE_DEVICES=3 python training/exp_runner.py --conf ./confs/DNeRF.conf --scene_name jumpingjack 
+# CUDA_VISIBLE_DEVICES=3 python training/exp_runner.py --conf ./confs/DNeRF.conf --scene_name jumpingjack 
+# CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/dnerf.conf --scan_id -1
+CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/spring_Gaus.conf --scan_id -1

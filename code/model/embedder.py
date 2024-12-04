@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 """ Positional encoding embedding. Code was taken from https://github.com/bmild/nerf. """
 
@@ -35,7 +36,10 @@ class Embedder:
     def embed(self, inputs):
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
-def get_embedder(multires, input_dims=3):
+def get_embedder(multires, input_dims=3, i=0):
+    if i == -1:
+        return nn.Identity(), input_dims
+    
     embed_kwargs = {
         'include_input': True,
         'input_dims': input_dims,
