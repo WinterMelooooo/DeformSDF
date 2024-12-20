@@ -10,6 +10,8 @@ from model.transformers import PntTransformer
 from pytorch3d.ops import ball_query
 from .nerf import Embedding, NeRF
 import utils.general as utils
+import open3d as o3d
+import os
 
 class ImplicitNetwork(nn.Module):
     def __init__(
@@ -248,7 +250,7 @@ class RenderingNetwork(nn.Module):
         return pos, weights.sum(-1, keepdim=True)
 
     def search(self, ray_particles, particles, fix_radius):
-        if particles.shape[0] == 0:
+        if particles.shape[1] == 0:
             #print("Warning: phys_particles is empty!")
             dists = torch.zeros(ray_particles.shape[0], ray_particles.shape[1], self.num_neighbor, device=ray_particles.device)
             indices = torch.full(
@@ -408,7 +410,7 @@ class VolSDFNetwork(nn.Module):
         if torch.cuda.is_available():
             self.transformers.cuda()
 
-    def forward(self, input, pnt_cloud):
+    def forward(self, input, pnt_cloud, save_pcd_info = None):
         # Parse model input
         intrinsics = input["intrinsics"]
         uv = input["uv"]
@@ -454,6 +456,8 @@ class VolSDFNetwork(nn.Module):
         for pnt_cloud in split:
             res.append(self.transformers(pnt_cloud, time))
         pnt_cloud = utils.merge_pnt_cloud(res)
+        if save_pcd_info:
+            self.save_point_cloud(pnt_cloud, save_pcd_info)
         #print(f"after merge, pnt_cloud.shape be:{pnt_cloud.shape}")
         rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors, pnt_cloud, ray_dirs, cam_loc[0])
         rgb = rgb_flat.reshape(-1, N_samples, 3)
@@ -540,6 +544,18 @@ class VolSDFNetwork(nn.Module):
 
         sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
         return sdf
+    def save_point_cloud(self, pnt_cloud, save_pcd_info):
+        pnt_cloud_cpu = pnt_cloud.squeeze().cpu().detach().numpy() # 将张量转换为 NumPy 数组
+        #print(f"pnt_cloud_cpu.shape be:{pnt_cloud_cpu.shape}")
+        #print(f"pnt_cloud_cpu be:{pnt_cloud_cpu}")
+        # 创建 Open3D PointCloud 对象
+        o3d_pcd = o3d.geometry.PointCloud()
+        o3d_pcd.points = o3d.utility.Vector3dVector(pnt_cloud_cpu)
+        epoch = save_pcd_info['epoch']
+        frame = save_pcd_info['frame']
+        pnt_cloud_path = save_pcd_info['pnt_cloud_path']
+        o3d.io.write_point_cloud(os.path.join(pnt_cloud_path, f'pnt_cloud_{epoch}_frame_{frame}.ply'), o3d_pcd)
+        return
 
 def batchify(fn, chunk):
     """Constructs a version of 'fn' that applies to smaller batches.

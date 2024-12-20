@@ -10,7 +10,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='input batch size')
-    parser.add_argument('--npretrain_epochs', type=int, default=20, help='number of pretrain_epochs to train for')
+    parser.add_argument('--npretrain_epochs', type=int, default=800, help='number of pretrain_epochs to train for')
     parser.add_argument('--ntrain_epochs', type=int, default=2000, help='number of train_epochs to train for')
     parser.add_argument('--conf', type=str, default='./confs/dtu.conf')
     parser.add_argument('--expname', type=str, default='')

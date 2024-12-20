@@ -7,5 +7,5 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 # CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/DNeRF_colored_bkgd.conf --scene_name jumpingjack
 # CUDA_VISIBLE_DEVICES=3 python training/exp_runner.py --conf ./confs/DNeRF.conf --scene_name jumpingjack 
 # CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/dnerf.conf --scan_id -1
-# CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/dnerf_transformers.conf --scan_id -1
-CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/dnerf_transformers.conf --scan_id -1 --is_continue --timestamp 2024_12_20_11_08_00
+CUDA_VISIBLE_DEVICES=5 python training/exp_runner.py --conf ./confs/dnerf_transformers_spring_Gaus.conf --scan_id -1
+# CUDA_VISIBLE_DEVICES=4 python training/exp_runner.py --conf ./confs/dnerf_transformers.conf --scan_id -1 --is_continue --timestamp 2024_12_20_11_08_00

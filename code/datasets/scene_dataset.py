@@ -149,7 +149,7 @@ class SceneDataset(torch.utils.data.Dataset):
                 self.pose_all.append(self.pose_all[i])
 
         self.rgb_images = []
-        for scan_id in range(len(self.scan_list)):
+        for scan_id in range(self.n_images):
             scan_path = self.scan_list[scan_id]
             imgs = sorted(glob.glob(os.path.join(scan_path, "image", f"*{extension}")))
             img_path = imgs[scan_id % self.n_cams]

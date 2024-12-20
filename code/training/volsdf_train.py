@@ -25,6 +25,7 @@ class VolSDFTrainRunner():
         self.ntrain_epochs = kwargs['ntrain_epochs']
         self.exps_folder_name = kwargs['exps_folder_name']
         self.GPU_INDEX = kwargs['gpu_index']
+        self.root_dir_extracted_mesh = None
 
         self.expname = self.conf.get_string('train.expname') + kwargs['expname']
         scan_id = kwargs['scan_id'] if kwargs['scan_id'] != -1 else self.conf.get_string('dataset.scan_id')
@@ -132,7 +133,7 @@ class VolSDFTrainRunner():
                 os.path.join(old_checkpnts_dir, 'ModelParameters', str(kwargs['checkpoint']) + ".pth"))
             self.model.load_state_dict(saved_model_state["model_state_dict"])
             self.start_epoch = saved_model_state['epoch']
-            #self.train_start_epoch = saved_model_state['train_epoch']
+            self.train_start_epoch = saved_model_state['train_epoch']
 
             data = torch.load(
                 os.path.join(old_checkpnts_dir, 'OptimizerParameters', str(kwargs['checkpoint']) + ".pth"))
@@ -180,10 +181,9 @@ class VolSDFTrainRunner():
     def run(self):
         print("pretraining...")
         pnt_cloud = torch.empty((1,0,3), device='cuda')
-        self.start_epoch = 21
         for epoch in range(self.start_epoch, self.npretrain_epochs + 1):
 
-            if epoch % self.checkpoint_freq == 0:
+            if epoch+1 % self.checkpoint_freq == 0:
                 self.save_checkpoints(epoch)
 
             if self.do_vis and epoch % self.plot_freq == 20:
@@ -250,7 +250,7 @@ class VolSDFTrainRunner():
                 psnr = rend_util.get_psnr(model_outputs['rgb_values'],
                                           ground_truth['rgb'].cuda().reshape(-1,3))
                 print(
-                    '{0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
+                    '(pretrain){0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
                         .format(self.expname, self.timestamp, epoch, data_index, self.n_batches, round(loss.item(),2),
                                 round(loss_output['rgb_loss'].item(),2),
                                 round(loss_output['eikonal_loss'].item(),2),
@@ -272,7 +272,7 @@ class VolSDFTrainRunner():
         pnt_cloud = torch.Tensor(np.array(pnt_cloud.points)).cuda().reshape(1,-1,3)
         print("training...")
         for epoch in range(self.train_start_epoch, self.ntrain_epochs):
-            if epoch % self.checkpoint_freq == 0:
+            if epoch+1 % self.checkpoint_freq == 0:
                 self.save_checkpoints(epoch)
             if self.do_vis and epoch % self.plot_freq == 20:
                 self.model.eval()
@@ -284,11 +284,14 @@ class VolSDFTrainRunner():
                 model_input["uv"] = model_input["uv"].cuda()
                 model_input['pose'] = model_input['pose'].cuda()
                 model_input['time'] = model_input['time'].cuda()
-
+                save_pcd_info = {}
+                save_pcd_info['epoch'] = epoch
+                save_pcd_info['frame'] = model_input['time'].item()
+                save_pcd_info['pnt_cloud_path'] = self.pnt_cloud_path
                 split = utils.split_input(model_input, self.total_pixels, n_pixels=self.split_n_pixels)
                 res = []
                 for s in tqdm(split):
-                    out = self.model(s,pnt_cloud)
+                    out = self.model(s,pnt_cloud, save_pcd_info)
                     d = {'rgb_values': out['rgb_values'].detach(),
                          'normal_map': out['normal_map'].detach()}
                     res.append(d)
@@ -336,7 +339,7 @@ class VolSDFTrainRunner():
                 psnr = rend_util.get_psnr(model_outputs['rgb_values'],
                                           ground_truth['rgb'].cuda().reshape(-1,3))
                 print(
-                    '{0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
+                    '(train){0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}'
                         .format(self.expname, self.timestamp, epoch, data_index, self.n_batches, round(loss.item(),2),
                                 round(loss_output['rgb_loss'].item(),2),
                                 round(loss_output['eikonal_loss'].item(),2),
@@ -387,3 +390,4 @@ class VolSDFTrainRunner():
         #print(f"reading extracted mesh: {latest_file_path}")
         mesh = trimesh.load(latest_file_path)
         return mesh
+    
