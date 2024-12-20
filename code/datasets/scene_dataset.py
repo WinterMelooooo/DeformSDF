@@ -108,7 +108,7 @@ class SceneDataset(torch.utils.data.Dataset):
             self.time_all.append(torch.from_numpy(time).float())
 
             self.n_images = len(self.rgb_images)
-            print("Loaded %d images" % self.n_images)
+            #print("Loaded %d images" % self.n_images)
             self.debug = False
 
     def read_DTU_dataset(self,

@@ -1,3 +1,6 @@
-dest = f"/home/yktang/DeformSDF/trash.txt"
-with open (dest, "a") as f:
-    print("test", file=f)
+import torch
+
+ts = torch.empty(1,0,3)
+ts = ts.unsqueeze(1)
+print(ts.shape)
+print(ts.shape[2])

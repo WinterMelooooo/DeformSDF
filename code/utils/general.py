@@ -2,6 +2,9 @@ import os
 from glob import glob
 import torch
 import re
+import trimesh
+import open3d as o3d
+import numpy as np
 
 def mkdir_ifnotexists(directory):
     if not os.path.exists(directory):
@@ -51,6 +54,21 @@ def merge_output(res, total_pixels, batch_size):
 
     return model_outputs
 
+def split_pnt_cloud(pnt_cloud, n_points=1000):
+    '''
+     Split the input to fit Cuda memory for large resolution.
+     Can decrease the value of n_pixels in case of cuda out of memory error.
+     '''
+    split = []
+    for i, indx in enumerate(torch.split(torch.arange(pnt_cloud.shape[0]).cuda(), n_points, dim=0)):
+        split.append(pnt_cloud[indx])
+    return split
+
+def merge_pnt_cloud(res):
+    ''' Merge the split output. '''
+    return torch.cat(res, 0)
+
+
 def concat_home_dir(path):
     return os.path.join(os.environ['HOME'],'data',path)
 
@@ -74,3 +92,17 @@ def get_scans(folder_path):
         return None, None
     
     return [i for i in range(min_frame, max_frame+1)]
+
+def sample_point_cloud_from_surface_mesh( mesh:trimesh.Trimesh, num_points = 10000, init_factor = 5):
+    vertices = np.array(mesh.vertices)  
+    faces = np.array(mesh.faces)  
+    mesh = o3d.geometry.TriangleMesh() 
+    mesh.vertices = o3d.utility.Vector3dVector(vertices)
+    mesh.triangles = o3d.utility.Vector3iVector(faces)
+    pcd = mesh.sample_points_poisson_disk(number_of_points=num_points, init_factor = 5)
+    mesh_area = mesh.get_surface_area()
+    average_area = mesh_area / len(pcd.points)
+
+    # 估算半径
+    radius = (average_area / 3.14159) ** 0.5
+    return pcd, radius
