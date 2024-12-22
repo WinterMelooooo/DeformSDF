@@ -10,7 +10,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='input batch size')
-    parser.add_argument('--npretrain_epochs', type=int, default=800, help='number of pretrain_epochs to train for')
+    parser.add_argument('--sdf_pretrain_epochs', type=int, default=1000, help='number of pretrain_epochs to train for')
+    parser.add_argument('--neurofluid_pretrain_epochs', type=int, default=500, help='number of pretrain_epochs to train for')
     parser.add_argument('--ntrain_epochs', type=int, default=2000, help='number of train_epochs to train for')
     parser.add_argument('--conf', type=str, default='./confs/dtu.conf')
     parser.add_argument('--expname', type=str, default='')
@@ -25,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('--scan_id', type=int, default=-1, help='If set, taken to be the scan id.')
     parser.add_argument('--cancel_vis', default=False, action="store_true",
                         help='If set, cancel visualization in intermediate epochs.')
-    parser.add_argument('--pretrained_pt_cloud', type=str, default='', help="The cloud point extracted from the pretrained average surface")
+    parser.add_argument('--pretrained_mesh', type=str, default='', help="The cloud point extracted from the pretrained average surface")
     #parser.add_argument('--scene_name',type=str,default="unamed")
     #parser.add_argument('--ckpt', default=None, type=str,
     #                    help="ckpt_path=prefix/TIMESTAMP")
@@ -42,7 +43,8 @@ if __name__ == '__main__':
     #print(f"timestamp: {opt.timestamp}")
     trainrunner = VolSDFTrainRunner(conf=opt.conf,
                                     batch_size=opt.batch_size,
-                                    npretrain_epochs=opt.npretrain_epochs,
+                                    sdf_pretrain_epochs=opt.sdf_pretrain_epochs,
+                                    neurofluid_pretrain_epochs=opt.neurofluid_pretrain_epochs,
                                     expname=opt.expname,
                                     gpu_index=gpu,
                                     exps_folder_name=opt.exps_folder,
@@ -52,7 +54,8 @@ if __name__ == '__main__':
                                     scan_id=opt.scan_id,
                                     checkpoint=opt.checkpoint,
                                     do_vis=not opt.cancel_vis,
-                                    ntrain_epochs = opt.ntrain_epochs
+                                    ntrain_epochs = opt.ntrain_epochs,
+                                    pretrained_mesh = opt.pretrained_mesh
                                     #IniCkpt = opt.ckpt,
                                     #temp_vis = opt.temp_vis
                                     )

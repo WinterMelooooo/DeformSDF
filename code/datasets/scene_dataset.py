@@ -55,7 +55,7 @@ class SceneDataset(torch.utils.data.Dataset):
         
         contents = json.load(open(os.path.join(self.instance_dir,  "transforms_train.json"))) #  transforms_test  transforms_train
         frames = contents["frames"]
-        extension = '.png'
+        extension = '.png' if not frames[0]["file_path"].endswith('.png') else ''
         image = Image.open(os.path.join(self.instance_dir, frames[0]["file_path"] + extension))
         width=image.size[0]
         height=image.size[1]
@@ -91,15 +91,19 @@ class SceneDataset(torch.utils.data.Dataset):
             self.images_lis.append(image_path)
 
             image = Image.open(image_path)
-            im_data = np.array(image.convert("RGBA"))
-            bg = np.array([1,1,1]) if white_bkgd else np.array([0,0,0])
-            norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            img = (arr * 255.0).astype(np.uint8)
-            # img = cv.cvtColor(img, cv.COLOR_RGB2BGR)
-            # cv.imshow('Window Name',img)
-            # cv.waitKey(0)
-            # cv.destroyAllWindows()
+            self.img_format = image.mode
+            if self.img_format == "RGBA":
+                im_data = np.array(image.convert("RGBA"))
+                bg = np.array([1,1,1]) if white_bkgd else np.array([0,0,0])
+                norm_data = im_data / 255.0
+                arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+                img = (arr * 255.0).astype(np.uint8)
+            else:
+                img = np.array(image.convert("RGB")).astype(np.uint8)
+            #img = cv.cvtColor(img, cv.COLOR_RGB2BGR)
+            #cv.imshow('Window Name',img)
+            #cv.waitKey(0)
+            #cv.destroyAllWindows()
             img = img / 255.0
             rgb = img.reshape(-1, 3)
             self.rgb_images.append(torch.from_numpy(rgb).float())
@@ -110,6 +114,8 @@ class SceneDataset(torch.utils.data.Dataset):
             self.n_images = len(self.rgb_images)
             #print("Loaded %d images" % self.n_images)
             self.debug = False
+        print(f"finish reading DNeRF dataset, image format:{self.img_format}")
+
 
     def read_DTU_dataset(self,
                          data_dir,

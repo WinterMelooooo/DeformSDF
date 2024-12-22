@@ -12,6 +12,7 @@ from .nerf import Embedding, NeRF
 import utils.general as utils
 import open3d as o3d
 import os
+from model.renderer import RenderNet
 
 class ImplicitNetwork(nn.Module):
     def __init__(
@@ -146,49 +147,12 @@ class RenderingNetwork(nn.Module):
             weight_norm=True,
             geometric_init=True,
             bias=1.0,
-            multires_view=0,
-            encoding_density = True,
-            encoding_var = True,
-            encoding_smoothed_pos = True,
-            encoding_smoothed_dir = True,
-            exclude_ray = True,
-            same_smooth_factor = False,
-            fix_radius = True,
-            particle_radius = 1.0,
-            search_raduis_scale = 9.0,
-            N_neighbor = 20
+            multires_view=0
     ):
         super().__init__()
 
-        self.raduis = search_raduis_scale * particle_radius
-        self.fix_radius = fix_radius
-        self.num_neighbor = N_neighbor
-        self.encoding_density = encoding_density
-        self.encoding_var = encoding_var
-        self.encoding_smoothed_pos = encoding_smoothed_pos
-        self.encoding_smoothed_dir = encoding_smoothed_dir 
-        self.exclude_ray = exclude_ray
-        self.same_smooth_factor = same_smooth_factor
-        self.particle_radius = particle_radius 
-        self.search_raduis_scale = search_raduis_scale 
-
-        # build network
-        self.embedding_xyz = Embedding(3, 10)
-        in_channels_xyz = self.embedding_xyz.out_channels
-        self.embedding_dir = Embedding(3, 4)
-        in_channels_dir = self.embedding_dir.out_channels
-        if encoding_density:
-            self.embedding_density = Embedding(1, 4)
-            in_channels_xyz += self.embedding_density.out_channels
-        if encoding_var:
-            in_channels_xyz += self.embedding_xyz.out_channels
-        if encoding_smoothed_pos:
-            in_channels_xyz += self.embedding_xyz.out_channels
-        if encoding_smoothed_dir:
-            in_channels_dir += self.embedding_dir.out_channels
-
         self.mode = mode
-        dims = [d_in + feature_vector_size + in_channels_xyz + in_channels_dir] + dims + [d_out]
+        dims = [d_in + feature_vector_size] + dims + [d_out]
 
         self.embedview_fn = None
         if multires_view > 0:
@@ -221,8 +185,7 @@ class RenderingNetwork(nn.Module):
         self.relu = nn.ReLU()
         self.sigmoid = torch.nn.Sigmoid()
     
-    def update_raduis(self, particle_raduis):
-        self.raduis = self.search_raduis_scale * particle_raduis
+
 
     def get_particles_direction(self, particles, ro):
         #print(f"particles.shape be:{particles.shape}")
@@ -335,7 +298,8 @@ class RenderingNetwork(nn.Module):
         else:
             return pos_like_feats
 
-    def forward(self, points, normals, view_dirs, feature_vectors, phys_points, ray_dirs, cam_loc ):
+            
+    def forward(self, points, normals, view_dirs, feature_vectors ):
         #print(f"points.shape be:{points.shape}")
         #print(f"normals.shape be:{normals.shape}")
         #print(f"view_dirs.shape be:{view_dirs.shape}")
@@ -349,19 +313,15 @@ class RenderingNetwork(nn.Module):
             rendering_input = torch.cat([points, view_dirs, normals, feature_vectors], dim=-1)
         elif self.mode == 'nerf':
             rendering_input = torch.cat([view_dirs, feature_vectors], dim=-1)
-        points = points.unsqueeze(0)
+        #points = points.unsqueeze(0)
         # search
-        dists_0, indices_0, neighbors_0, radius_0 = self.search(points, phys_points, self.fix_radius)
-        points = points.reshape(ray_dirs.shape[0], -1, 3)
+        #dists_0, indices_0, neighbors_0, radius_0 = self.search(
+        # , phys_points, self.fix_radius)
+        #points = points.reshape(ray_dirs.shape[0], -1, 3)
         # embedding attributes
-        pos_like_feats_0, dirs_like_feats_0, num_nn_0 = self.embedding_local_geometry(dists_0, indices_0, neighbors_0, radius_0, points, ray_dirs, cam_loc)
-        #print(f"pos_like_feats_0: {len(pos_like_feats_0)}, {pos_like_feats_0[0].shape}, {pos_like_feats_0[1].shape}, {pos_like_feats_0[2].shape}, {pos_like_feats_0[3].shape}")
-        #print(f"dirs_like_feats_0: {len(dirs_like_feats_0)}, {dirs_like_feats_0[0].shape}, {dirs_like_feats_0[1].shape}")   
-        input_feats_0 = torch.cat(pos_like_feats_0+dirs_like_feats_0, dim=1)
-        #print(f"rendering input: {rendering_input.shape}")
-        #print(f"input feats: {input_feats_0.shape}")
-        rendering_input = torch.cat((rendering_input, input_feats_0), dim = 1)
-        #print(f"rendering input: {rendering_input.shape}")
+        #pos_like_feats_0, dirs_like_feats_0, num_nn_0 = self.embedding_local_geometry(dists_0, indices_0, neighbors_0, radius_0, points, ray_dirs, cam_loc)
+        #input_feats_0 = torch.cat(pos_like_feats_0+dirs_like_feats_0, dim=1)
+        #rendering_input = torch.cat((rendering_input, input_feats_0), dim = 1)
         x = rendering_input
 
         for l in range(0, self.num_layers - 1):
@@ -373,7 +333,6 @@ class RenderingNetwork(nn.Module):
                 x = self.relu(x)
 
         x = self.sigmoid(x)
-        #print(f"forward over for RenderingNetwork!")
         return x
 
 class VolSDFNetwork(nn.Module):
@@ -386,11 +345,12 @@ class VolSDFNetwork(nn.Module):
 
         self.implicit_network = ImplicitNetwork(self.feature_vector_size, 0.0 if self.white_bkgd else self.scene_bounding_sphere, **conf.get_config('implicit_network'))
         self.rendering_network = RenderingNetwork(self.feature_vector_size, **conf.get_config('rendering_network'))
-
         self.density = LaplaceDensity(**conf.get_config('density'))
         self.ray_sampler = ErrorBoundSampler(self.scene_bounding_sphere, **conf.get_config('ray_sampler'))
-        
-        
+        self.pnt_renderer = RenderNet(conf.get_config('pnt_renderer'))
+        self.pretrain_sdf_renderer = True
+        self.pretrain_pnt_renderer = False
+        self.e2e = False
         multires = 10
         i_embed = 0
         multires_views = 4
@@ -409,6 +369,36 @@ class VolSDFNetwork(nn.Module):
         self.transformers = PntTransformer(conf_transformer)
         if torch.cuda.is_available():
             self.transformers.cuda()
+
+    def change_state(self, pretrain_sdf_renderer=False, pretrain_pnt_renderer=False, e2e=False):
+        if pretrain_sdf_renderer:
+            self.pretrain_sdf_renderer = True
+            self.pretrain_pnt_renderer = False
+            self.e2e = False
+        if pretrain_pnt_renderer:
+            self.pretrain_sdf_renderer = False
+            self.pretrain_pnt_renderer = True
+            self.e2e = False
+            for param in self.implicit_network.parameters():
+                param.requires_grad = False
+            for param in self.rendering_network.parameters():
+                param.requires_grad = False
+            for param in self.deform_net.parameters():
+                param.requires_grad = False
+            for param in self.density.parameters():
+                param.requires_grad = False
+        if e2e:
+            self.pretrain_sdf_renderer = False
+            self.pretrain_pnt_renderer = False
+            self.e2e = True
+            for param in self.implicit_network.parameters():
+                param.requires_grad = True
+            for param in self.rendering_network.parameters():
+                param.requires_grad = True
+            for param in self.deform_net.parameters():
+                param.requires_grad = True
+            for param in self.density.parameters():
+                param.requires_grad = True
 
     def forward(self, input, pnt_cloud, save_pcd_info = None):
         # Parse model input
@@ -449,17 +439,25 @@ class VolSDFNetwork(nn.Module):
         points = points_flat.reshape(-1, N_samples, 3)
 
         sdf, feature_vectors, gradients = self.implicit_network.get_outputs(points_flat)
+        
+        
+        if self.pretrain_sdf_renderer:
+            rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors)
+        elif self.pretrain_pnt_renderer:
+            rgb_flat = self.pnt_renderer(points, pnt_cloud, cam_loc[0], ray_dirs)
 
-        res = []
-        #print(f"before split, pnt_cloud.shape be:{pnt_cloud.shape}")
-        split = utils.split_pnt_cloud(pnt_cloud)
-        for pnt_cloud in split:
-            res.append(self.transformers(pnt_cloud, time))
-        pnt_cloud = utils.merge_pnt_cloud(res)
-        if save_pcd_info:
-            self.save_point_cloud(pnt_cloud, save_pcd_info)
-        #print(f"after merge, pnt_cloud.shape be:{pnt_cloud.shape}")
-        rgb_flat = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors, pnt_cloud, ray_dirs, cam_loc[0])
+        elif self.e2e:
+            res = []
+            split = utils.split_pnt_cloud(pnt_cloud, n_points=5000)
+            for pnt_cloud in split:
+                res.append(self.transformers(pnt_cloud, time))
+            pnt_cloud = utils.merge_pnt_cloud(res)
+            if save_pcd_info:
+                self.save_point_cloud(pnt_cloud, save_pcd_info)
+            rgb_flat_sdf = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors)
+            rgb_flat_pnt = self.pnt_renderer(points, pnt_cloud, cam_loc[0], ray_dirs)
+            rgb_flat = torch.where(rgb_flat_pnt != 0, rgb_flat_pnt, rgb_flat_sdf)
+
         rgb = rgb_flat.reshape(-1, N_samples, 3)
 
         weights = self.volume_rendering(z_vals, sdf)
@@ -495,6 +493,9 @@ class VolSDFNetwork(nn.Module):
             output['normal_map'] = normal_map
 
         return output
+
+    def update_raduis(self, particle_raduis):
+        self.pnt_renderer.raduis = self.pnt_renderer.search_raduis_scale * particle_raduis
 
     def volume_rendering(self, z_vals, sdf):
         density_flat = self.density(sdf)
