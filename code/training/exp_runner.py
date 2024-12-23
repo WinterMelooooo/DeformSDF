@@ -1,17 +1,23 @@
 import sys
-
+import os
 sys.path.append('../code')
 import argparse
 import GPUtil
 
 from training.volsdf_train import VolSDFTrainRunner
 
+def get_command():
+    args = sys.argv
+    args_str = ' '.join([f'"{arg}"' if ' ' in arg else arg for arg in args])
+    return args_str
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1, help='input batch size')
     parser.add_argument('--sdf_pretrain_epochs', type=int, default=1000, help='number of pretrain_epochs to train for')
-    parser.add_argument('--neurofluid_pretrain_epochs', type=int, default=500, help='number of pretrain_epochs to train for')
+    parser.add_argument('--neurofluid_pretrain_epochs', type=int, default=600, help='number of pretrain_epochs to train for')
     parser.add_argument('--ntrain_epochs', type=int, default=2000, help='number of train_epochs to train for')
     parser.add_argument('--conf', type=str, default='./confs/dtu.conf')
     parser.add_argument('--expname', type=str, default='')
@@ -27,6 +33,8 @@ if __name__ == '__main__':
     parser.add_argument('--cancel_vis', default=False, action="store_true",
                         help='If set, cancel visualization in intermediate epochs.')
     parser.add_argument('--pretrained_mesh', type=str, default='', help="The cloud point extracted from the pretrained average surface")
+    parser.add_argument('--comment', type=str, default='', help='Comment for the run')
+    parser.add_argument('--num_pnts_extracted', type=int, default=5000, help='Number of points to extract from the mesh')
     #parser.add_argument('--scene_name',type=str,default="unamed")
     #parser.add_argument('--ckpt', default=None, type=str,
     #                    help="ckpt_path=prefix/TIMESTAMP")
@@ -55,7 +63,9 @@ if __name__ == '__main__':
                                     checkpoint=opt.checkpoint,
                                     do_vis=not opt.cancel_vis,
                                     ntrain_epochs = opt.ntrain_epochs,
-                                    pretrained_mesh = opt.pretrained_mesh
+                                    pretrained_mesh = opt.pretrained_mesh,
+                                    cmd = get_command(),
+                                    comment = opt.comment
                                     #IniCkpt = opt.ckpt,
                                     #temp_vis = opt.temp_vis
                                     )

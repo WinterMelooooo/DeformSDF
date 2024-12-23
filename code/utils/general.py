@@ -93,7 +93,7 @@ def get_scans(folder_path):
     
     return [i for i in range(min_frame, max_frame+1)]
 
-def sample_point_cloud_from_surface_mesh( mesh:trimesh.Trimesh, num_points = 10000, init_factor = 5):
+def sample_point_cloud_from_surface_mesh( mesh:trimesh.Trimesh, num_points = 5000, init_factor = 5):
     vertices = np.array(mesh.vertices)  
     faces = np.array(mesh.faces)  
     mesh = o3d.geometry.TriangleMesh() 

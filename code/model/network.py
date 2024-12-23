@@ -448,15 +448,18 @@ class VolSDFNetwork(nn.Module):
 
         elif self.e2e:
             res = []
-            split = utils.split_pnt_cloud(pnt_cloud, n_points=5000)
-            for pnt_cloud in split:
-                res.append(self.transformers(pnt_cloud, time))
-            pnt_cloud = utils.merge_pnt_cloud(res)
+            n_points = 5000
+            if pnt_cloud.shape[0] > n_points:
+                split = utils.split_pnt_cloud(pnt_cloud, n_points=n_points)
+                for pnt_cloud in split:
+                    res.append(self.transformers(pnt_cloud, time))
+                pnt_cloud = utils.merge_pnt_cloud(res)
             if save_pcd_info:
                 self.save_point_cloud(pnt_cloud, save_pcd_info)
-            rgb_flat_sdf = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors)
+            #rgb_flat_sdf = self.rendering_network(points_flat, gradients, dirs_flat, feature_vectors)
             rgb_flat_pnt = self.pnt_renderer(points, pnt_cloud, cam_loc[0], ray_dirs)
-            rgb_flat = torch.where(rgb_flat_pnt != 0, rgb_flat_pnt, rgb_flat_sdf)
+            #rgb_flat = torch.where(rgb_flat_pnt != 0, rgb_flat_pnt, rgb_flat_sdf)
+            rgb_flat = rgb_flat_pnt
 
         rgb = rgb_flat.reshape(-1, N_samples, 3)
 

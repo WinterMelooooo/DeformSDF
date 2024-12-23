@@ -29,6 +29,8 @@ class VolSDFTrainRunner():
         self.pretrained_mesh = kwargs['pretrained_mesh']
         self.root_dir_extracted_mesh = None
         self.is_continue = False
+        self.cmd = kwargs['cmd']
+        self.comment = kwargs['comment']
 
         self.expname = self.conf.get_string('train.expname') + kwargs['expname']
         scan_id = kwargs['scan_id'] if kwargs['scan_id'] != -1 else self.conf.get_string('dataset.scan_id')
@@ -56,7 +58,10 @@ class VolSDFTrainRunner():
         utils.mkdir_ifnotexists(self.expdir)
         self.timestamp = '{:%Y_%m_%d_%H_%M_%S}'.format(datetime.now())
         utils.mkdir_ifnotexists(os.path.join(self.expdir, self.timestamp))
-
+        with open(os.path.join(self.expdir, self.timestamp, 'cmd.txt'), 'w') as f:
+            f.write(self.cmd)
+        with open(os.path.join(self.expdir, self.timestamp, 'comment.txt'), 'w') as f:
+            f.write(self.comment)
         self.plots_dir = os.path.join(self.expdir, self.timestamp, 'plots')
         utils.mkdir_ifnotexists(self.plots_dir)
         self.plots_dir_sdf = os.path.join(self.plots_dir, 'sdf')
@@ -72,6 +77,8 @@ class VolSDFTrainRunner():
         self.model_params_subdir = "ModelParameters"
         self.optimizer_params_subdir = "OptimizerParameters"
         self.scheduler_params_subdir = "SchedulerParameters"
+        self.tranformers_scheduler_params_subdir = "TransformersSchedulerParameters"
+        #self.pnt_renderer_scheduler_params_subdir = "PntRendererSchedulerParameters"
 
         self.pnt_cloud_path = os.path.join(self.expdir, self.timestamp, 'pnt_cloud')
         utils.mkdir_ifnotexists(self.pnt_cloud_path)
@@ -82,6 +89,8 @@ class VolSDFTrainRunner():
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.model_params_subdir))
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.optimizer_params_subdir))
         utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.scheduler_params_subdir))
+        utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.tranformers_scheduler_params_subdir))
+        #utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.pnt_renderer_scheduler_params_subdir))
 
         os.system("""cp -r {0} "{1}" """.format(kwargs['conf'], os.path.join(self.expdir, self.timestamp, 'runconf.conf')))
 
@@ -120,12 +129,19 @@ class VolSDFTrainRunner():
         self.loss = utils.get_class(self.conf.get_string('train.loss_class'))(**self.conf.get_config('loss'))
 
         self.lr = self.conf.get_float('train.learning_rate')
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        #self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        self.optimizer = torch.optim.Adam( [{'params': [param for name, param in self.model.named_parameters() if 'transformers' not in name] }], lr=self.lr)
+        #self.optimizer = torch.optim.Adam( [{'params': [param for name, param in self.model.named_parameters() if 'transformers' not in name and 'pnt_renderer' not in name] }], lr=self.lr)
+        self.optimizer_tranformers = torch.optim.Adam( self.model.transformers.parameters(), lr=self.lr)
+        #self.optimizer_pnt_renderer = torch.optim.Adam( self.model.pnt_renderer.parameters(), lr=self.lr)
         # Exponential learning rate scheduler
         decay_rate = self.conf.get_float('train.sched_decay_rate', default=0.1)
         decay_steps = (self.sdf_pretrain_epochs+self.neurofluid_pretrain_epochs+self.ntrain_epochs) * len(self.train_dataset)
+        decay_steps_tranformers = self.ntrain_epochs * len(self.train_dataset)
+        #decay_steps_pnt_renderer = (self.neurofluid_pretrain_epochs+self.ntrain_epochs) * len(self.train_dataset)
         self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, decay_rate ** (1./decay_steps))
-
+        self.scheduler_tranformers = torch.optim.lr_scheduler.ExponentialLR(self.optimizer_tranformers, decay_rate ** (1./decay_steps_tranformers))
+        #self.scheduler_pnt_renderer = torch.optim.lr_scheduler.ExponentialLR(self.optimizer_pnt_renderer, decay_rate ** (1./decay_steps_pnt_renderer))
         self.do_vis = kwargs['do_vis']
 
         self.sdf_start_epoch = 0
@@ -149,6 +165,16 @@ class VolSDFTrainRunner():
             data = torch.load(
                 os.path.join(old_checkpnts_dir, self.scheduler_params_subdir, str(kwargs['checkpoint']) + ".pth"))
             self.scheduler.load_state_dict(data["scheduler_state_dict"])
+
+            data = torch.load(
+                os.path.join(old_checkpnts_dir, self.tranformers_scheduler_params_subdir, str(kwargs['checkpoint']) + ".pth"))
+            self.scheduler_tranformers.load_state_dict(data["transformers_scheduler_state_dict"])
+
+            #data = torch.load(
+            #    os.path.join(old_checkpnts_dir, self.pnt_renderer_scheduler_params_subdir, str(kwargs['checkpoint']) + ".pth"))
+            #self.scheduler_pnt_renderer.load_state_dict(data["pnt_renderer_scheduler_state_dict"])
+
+
             self.pretrained_mesh_dir = os.path.join(self.expdir, timestamp, 'plots', 'sdf')
             print(f"pretrained_mesh_dir: {self.pretrained_mesh_dir}")
 
@@ -186,6 +212,20 @@ class VolSDFTrainRunner():
         torch.save(
             {"pretrain_epoch_sdf": pretrain_epoch_sdf, "pretrain_epoch_neurofluid": pretrain_epoch_neurofluid,  "train_epoch": train_epoch, "scheduler_state_dict": self.scheduler.state_dict()},
             os.path.join(self.checkpoints_path, self.scheduler_params_subdir, "latest.pth"))
+
+        torch.save(
+            {"pretrain_epoch_sdf": pretrain_epoch_sdf, "pretrain_epoch_neurofluid": pretrain_epoch_neurofluid,  "train_epoch": train_epoch, "transformers_scheduler_state_dict": self.scheduler_tranformers.state_dict()},
+            os.path.join(self.checkpoints_path, self.tranformers_scheduler_params_subdir, str(pretrain_epoch_sdf+pretrain_epoch_neurofluid+train_epoch) + ".pth"))
+        torch.save(
+            {"pretrain_epoch_sdf": pretrain_epoch_sdf, "pretrain_epoch_neurofluid": pretrain_epoch_neurofluid,  "train_epoch": train_epoch, "transformers_scheduler_state_dict": self.scheduler_tranformers.state_dict()},
+            os.path.join(self.checkpoints_path, self.tranformers_scheduler_params_subdir, "latest.pth"))
+
+        #torch.save(
+        #    {"pretrain_epoch_sdf": pretrain_epoch_sdf, "pretrain_epoch_neurofluid": pretrain_epoch_neurofluid,  "train_epoch": train_epoch, "pnt_renderer_scheduler_state_dict": self.scheduler_pnt_renderer.state_dict()},
+        #    os.path.join(self.checkpoints_path, self.pnt_renderer_scheduler_params_subdir, str(pretrain_epoch_sdf+pretrain_epoch_neurofluid+train_epoch) + ".pth"))
+        #torch.save(
+        #    {"pretrain_epoch_sdf": pretrain_epoch_sdf, "pretrain_epoch_neurofluid": pretrain_epoch_neurofluid,  "train_epoch": train_epoch, "pnt_renderer_scheduler_state_dict": self.scheduler_pnt_renderer.state_dict()},
+        #    os.path.join(self.checkpoints_path, self.pnt_renderer_scheduler_params_subdir, "latest.pth"))
 
     def run(self):
         print("pretraining sdf...")
@@ -369,6 +409,7 @@ class VolSDFTrainRunner():
                 self.writer.add_scalar("PSNR", psnr.item(), self.iteration)
                 self.train_dataset.change_sampling_idx(self.num_pixels)
                 self.scheduler.step()
+                #self.scheduler_pnt_renderer.step()
 
         self.model.change_state(e2e=True)
         print("training...")
@@ -446,10 +487,12 @@ class VolSDFTrainRunner():
                 self.writer.add_scalar("PSNR", psnr.item(), self.iteration)
                 self.train_dataset.change_sampling_idx(self.num_pixels)
                 self.scheduler.step()
+                #self.scheduler_pnt_renderer.step()
+                self.scheduler_tranformers.step()
 
 
 
-        self.save_checkpoints(epoch)
+        self.save_checkpoints(train_epoch=epoch)
         self.writer.close() 
 
     def get_plot_data(self, model_outputs, pose, rgb_gt):
@@ -481,6 +524,8 @@ class VolSDFTrainRunner():
             frame = int(file_name.split('_')[1])
             if frame > latest_frame:
                 latest_frame, latest_file_path = frame, os.path.join(plot_dir, file_name)
+        if surface_mesh_path:
+            os.system('cp {0} {1}'.format(latest_file_path, self.plots_dir_sdf))
         #print(f"reading extracted mesh: {latest_file_path}")
         latest_file_path = latest_file_path if not pretrained_mesh_path else pretrained_mesh_path
         mesh = trimesh.load(latest_file_path)
